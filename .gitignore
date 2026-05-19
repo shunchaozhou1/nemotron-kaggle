@@ -1,0 +1,6 @@
+kaggle.json
+.env
+outputs/
+*.zip
+__pycache__/
+.ipynb_checkpoints/
