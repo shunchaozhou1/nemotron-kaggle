@@ -1,6 +1,6 @@
 {
-  "id": "zhoushucnhao/nemotron-sft-exp002",
-  "title": "Nemotron SFT Exp002",
+  "id": "zhoushucnhao/nemotron-exp-dropout0",
+  "title": "Nemotron Exp Dropout0",
   "code_file": "sft_train.py",
   "language": "python",
   "kernel_type": "script",

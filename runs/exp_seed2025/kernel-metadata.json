@@ -1,6 +1,6 @@
 {
-  "id": "zhoushucnhao/nemotron-sft-exp002",
-  "title": "Nemotron SFT Exp002",
+  "id": "zhoushucnhao/nemotron-exp-seed2025",
+  "title": "Nemotron Exp Seed2025",
   "code_file": "sft_train.py",
   "language": "python",
   "kernel_type": "script",

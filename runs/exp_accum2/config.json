@@ -1,0 +1,4 @@
+{
+  "exp_name": "exp_accum2",
+  "grad_accum_steps": 2
+}

@@ -1,6 +1,6 @@
 {
-  "id": "zhoushucnhao/nemotron-sft-exp002",
-  "title": "Nemotron SFT Exp002",
+  "id": "zhoushucnhao/nemotron-exp-accum2",
+  "title": "Nemotron Exp Accum2",
   "code_file": "sft_train.py",
   "language": "python",
   "kernel_type": "script",
