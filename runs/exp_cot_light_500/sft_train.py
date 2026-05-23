@@ -68,8 +68,12 @@ DEFAULT_CONFIG = {
 }
 
 RUN_CONFIG = {
-    "exp_name": "exp_seed99",
-    "random_state": 99,
+    "exp_name": "exp_cot_light_500",
+    "data_mode": "official_plus_cot",
+    "max_train_samples": 500,
+    "num_cot_samples": 500,
+    "max_length": 2048,
+    "random_state": 42,
 }
 
 

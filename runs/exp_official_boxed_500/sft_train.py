@@ -68,8 +68,11 @@ DEFAULT_CONFIG = {
 }
 
 RUN_CONFIG = {
-    "exp_name": "exp_seed99",
-    "random_state": 99,
+    "exp_name": "exp_official_boxed_500",
+    "data_mode": "official_boxed",
+    "max_train_samples": 500,
+    "max_length": 1024,
+    "random_state": 42,
 }
 
 
@@ -87,7 +90,11 @@ def load_config():
     print("Config:")
     print(json.dumps(cfg, indent=2, ensure_ascii=False, sort_keys=True))
 
-    if cfg.get("data_mode") in ["official_plus_cot", "cot_only"]:
+    if cfg.get("data_mode") in [
+        "official_plus_cot",
+        "cot_only",
+        "official_boxed_plus_cot",
+    ]:
         if cfg.get("num_cot_samples", 0) <= 0:
             raise ValueError(
                 f"data_mode={cfg.get('data_mode')} requires num_cot_samples > 0."
@@ -255,15 +262,27 @@ def clean_cot_text(text):
     return text.rstrip()
 
 
-def prepare_official_train_df(train, tokenizer, cfg):
+def prepare_official_train_df(train, tokenizer, cfg, boxed=False):
     df = train.to_pandas().sample(
         n=min(cfg["max_train_samples"], train.shape[0]),
         random_state=cfg["random_state"],
     ).reset_index(drop=True)
 
-    df["train_prompt"] = df["prompt"].astype(str).str.rstrip() + "\n"
-    df["train_completion"] = df["answer"].astype(str).str.strip() + tokenizer.eos_token
-    df["data_source"] = "official"
+    if boxed:
+        df["train_prompt"] = (
+            df["prompt"].astype(str).str.rstrip() + cfg["cot_prompt_suffix"] + "\n"
+        )
+        df["train_completion"] = (
+            "\\boxed{" + df["answer"].astype(str).str.strip() + "}" + tokenizer.eos_token
+        )
+        df["data_source"] = "official_boxed"
+    else:
+        df["train_prompt"] = df["prompt"].astype(str).str.rstrip() + "\n"
+        df["train_completion"] = (
+            df["answer"].astype(str).str.strip() + tokenizer.eos_token
+        )
+        df["data_source"] = "official"
+
     return df
 
 
@@ -305,9 +324,18 @@ def load_cot_train_df(tokenizer, cfg):
 
 def prepare_training_data(train, tokenizer, cfg):
     data_mode = cfg["data_mode"]
-    if data_mode not in {"official_only", "cot_only", "official_plus_cot"}:
+    valid_data_modes = {
+        "official_only",
+        "cot_only",
+        "official_plus_cot",
+        "official_boxed",
+        "official_boxed_plus_cot",
+    }
+    if data_mode not in valid_data_modes:
         raise ValueError(
-            "data_mode must be one of: official_only, cot_only, official_plus_cot"
+            "data_mode must be one of: "
+            "official_only, official_plus_cot, official_boxed, "
+            "official_boxed_plus_cot"
         )
 
     official_df = None
@@ -316,10 +344,13 @@ def prepare_training_data(train, tokenizer, cfg):
     if data_mode in {"official_only", "official_plus_cot"}:
         official_df = prepare_official_train_df(train, tokenizer, cfg)
 
-    if data_mode in {"cot_only", "official_plus_cot"}:
+    if data_mode in {"official_boxed", "official_boxed_plus_cot"}:
+        official_df = prepare_official_train_df(train, tokenizer, cfg, boxed=True)
+
+    if data_mode in {"cot_only", "official_plus_cot", "official_boxed_plus_cot"}:
         cot_df = load_cot_train_df(tokenizer, cfg)
 
-    if data_mode == "official_only":
+    if data_mode in {"official_only", "official_boxed"}:
         train_df = official_df
     elif data_mode == "cot_only":
         train_df = cot_df.sample(frac=1, random_state=cfg["random_state"]).reset_index(
@@ -333,13 +364,16 @@ def prepare_training_data(train, tokenizer, cfg):
         )
 
     official_count = int((train_df["data_source"] == "official").sum())
+    official_boxed_count = int((train_df["data_source"] == "official_boxed").sum())
     cot_count = int((train_df["data_source"] == "cot").sum())
+    print("Data mode:", data_mode)
     print(
         "Training data counts: "
-        f"total={len(train_df)}, official={official_count}, cot={cot_count}"
+        f"total={len(train_df)}, official={official_count}, "
+        f"official_boxed={official_boxed_count}, cot={cot_count}"
     )
 
-    if data_mode in {"official_plus_cot", "cot_only"} and cot_count == 0:
+    if data_mode in {"official_plus_cot", "cot_only", "official_boxed_plus_cot"} and cot_count == 0:
         raise RuntimeError(
             f"data_mode={data_mode} requires CoT samples, but prepared cot samples = 0."
         )

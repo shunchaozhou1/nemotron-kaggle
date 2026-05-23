@@ -1,0 +1,24 @@
+{
+  "id": "zhoushucnhao/nemotron-exp-cot-light-1000",
+  "title": "Nemotron Exp Cot Light 1000",
+  "code_file": "sft_train.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "keywords": [],
+  "dataset_sources": [
+    "dgxchen/nemotron-cot-tong"
+  ],
+  "kernel_sources": [
+    "ryanholbrook/nvidia-utility-script"
+  ],
+  "competition_sources": [
+    "nvidia-nemotron-model-reasoning-challenge"
+  ],
+  "model_sources": [
+    "metric/nemotron-3-nano-30b-a3b-bf16/Transformers/default/1"
+  ]
+}

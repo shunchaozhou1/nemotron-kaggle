@@ -1,11 +1,13 @@
 import glob
 import json
 import os
+import re
 import shutil
 import site
 import subprocess
 import sys
 
+import pandas as pd
 import polars as pl
 import torch
 from peft import LoraConfig, TaskType, get_peft_model
@@ -59,24 +61,38 @@ DEFAULT_CONFIG = {
     "batch_size": 1,
     "grad_accum_steps": 4,
     "num_epochs": 1,
+    "data_mode": "official_only",
+    "num_cot_samples": 0,
+    "cot_dataset_path": "/kaggle/input/datasets/dgxchen/nemotron-cot-tong/problem_ids_matched.csv",
+    "cot_prompt_suffix": "\nPlease put your final answer inside `\\boxed{}`. For example: `\\boxed{your answer}`",
+}
+
+RUN_CONFIG = {
+    "exp_name": "exp_dropout0",
+    "lora_dropout": 0.0,
 }
 
 
 def load_config():
     cfg = DEFAULT_CONFIG.copy()
-    config_path = os.path.join(os.getcwd(), "config.json")
+    run_config = globals().get("RUN_CONFIG", {})
 
-    if os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as f:
-            overrides = json.load(f)
-        cfg.update(overrides)
-        print("Loaded config from:", config_path)
+    if run_config:
+        print("Using embedded RUN_CONFIG from sft_train.py")
+        cfg.update(run_config)
     else:
-        print("config.json not found. Using DEFAULT_CONFIG.")
+        print("RUN_CONFIG is empty. Using DEFAULT_CONFIG.")
 
     print("Experiment:", cfg["exp_name"])
     print("Config:")
-    print(json.dumps(cfg, indent=2, sort_keys=True))
+    print(json.dumps(cfg, indent=2, ensure_ascii=False, sort_keys=True))
+
+    if cfg.get("data_mode") in ["official_plus_cot", "cot_only"]:
+        if cfg.get("num_cot_samples", 0) <= 0:
+            raise ValueError(
+                f"data_mode={cfg.get('data_mode')} requires num_cot_samples > 0."
+            )
+
     return cfg
 
 
@@ -162,8 +178,12 @@ class PromptCompletionDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
 
-        prompt = str(row["prompt"]).rstrip() + "\n"
-        answer = str(row["answer"]).strip() + self.tokenizer.eos_token
+        if "train_prompt" in self.df.columns and "train_completion" in self.df.columns:
+            prompt = str(row["train_prompt"])
+            answer = str(row["train_completion"])
+        else:
+            prompt = str(row["prompt"]).rstrip() + "\n"
+            answer = str(row["answer"]).strip() + self.tokenizer.eos_token
 
         prompt_ids = self.tokenizer(
             prompt,
@@ -218,6 +238,113 @@ def make_collate_fn(tokenizer):
     return collate_fn
 
 
+def list_kaggle_input_candidates():
+    print("Listing candidate files under /kaggle/input:")
+    for pattern in [
+        "/kaggle/input/**/*.csv",
+        "/kaggle/input/**/*.json",
+        "/kaggle/input/**/*.parquet",
+    ]:
+        for path in glob.glob(pattern, recursive=True)[:200]:
+            print(path)
+
+
+def clean_cot_text(text):
+    text = str(text)
+    text = re.sub(r"\\boxed\{[^{}]*\}", "", text)
+    return text.rstrip()
+
+
+def prepare_official_train_df(train, tokenizer, cfg):
+    df = train.to_pandas().sample(
+        n=min(cfg["max_train_samples"], train.shape[0]),
+        random_state=cfg["random_state"],
+    ).reset_index(drop=True)
+
+    df["train_prompt"] = df["prompt"].astype(str).str.rstrip() + "\n"
+    df["train_completion"] = df["answer"].astype(str).str.strip() + tokenizer.eos_token
+    df["data_source"] = "official"
+    return df
+
+
+def load_cot_train_df(tokenizer, cfg):
+    cot_path = cfg["cot_dataset_path"]
+    if not os.path.exists(cot_path):
+        list_kaggle_input_candidates()
+        raise FileNotFoundError(
+            f"CoT dataset is required for data_mode={cfg['data_mode']!r}, "
+            f"but cot_dataset_path does not exist: {cot_path}"
+        )
+
+    df = pl.read_csv(cot_path).to_pandas()
+    required_columns = {"prompt", "answer", "generated_cot", "type"}
+    missing_columns = sorted(required_columns - set(df.columns))
+    if missing_columns:
+        raise ValueError(f"CoT dataset is missing columns: {missing_columns}")
+
+    cot = df.dropna(subset=["generated_cot"]).copy()
+    cot["generated_cot"] = cot["generated_cot"].astype(str)
+    cot = cot[cot["generated_cot"].str.strip().str.len() >= 5].copy()
+    cot["cot_cleaned"] = cot["generated_cot"].map(clean_cot_text)
+    cot = cot[cot["cot_cleaned"].str.strip().str.len() >= 5].copy()
+
+    n = min(cfg["num_cot_samples"], len(cot))
+    cot = cot.sample(n=n, random_state=cfg["random_state"]).reset_index(drop=True)
+
+    cot["train_prompt"] = cot["prompt"].astype(str) + cfg["cot_prompt_suffix"] + "\n"
+    cot["train_completion"] = (
+        cot["cot_cleaned"]
+        + "\n</think>\n\\boxed{"
+        + cot["answer"].astype(str).str.strip()
+        + "}"
+        + tokenizer.eos_token
+    )
+    cot["data_source"] = "cot"
+    return cot
+
+
+def prepare_training_data(train, tokenizer, cfg):
+    data_mode = cfg["data_mode"]
+    if data_mode not in {"official_only", "cot_only", "official_plus_cot"}:
+        raise ValueError(
+            "data_mode must be one of: official_only, cot_only, official_plus_cot"
+        )
+
+    official_df = None
+    cot_df = None
+
+    if data_mode in {"official_only", "official_plus_cot"}:
+        official_df = prepare_official_train_df(train, tokenizer, cfg)
+
+    if data_mode in {"cot_only", "official_plus_cot"}:
+        cot_df = load_cot_train_df(tokenizer, cfg)
+
+    if data_mode == "official_only":
+        train_df = official_df
+    elif data_mode == "cot_only":
+        train_df = cot_df.sample(frac=1, random_state=cfg["random_state"]).reset_index(
+            drop=True
+        )
+    else:
+        train_df = (
+            pd.concat([official_df, cot_df], ignore_index=True, sort=False)
+            .sample(frac=1, random_state=cfg["random_state"])
+            .reset_index(drop=True)
+        )
+
+    official_count = int((train_df["data_source"] == "official").sum())
+    cot_count = int((train_df["data_source"] == "cot").sum())
+    print(
+        "Training data counts: "
+        f"total={len(train_df)}, official={official_count}, cot={cot_count}"
+    )
+
+    if data_mode in {"official_plus_cot", "cot_only"} and cot_count == 0:
+        raise RuntimeError(
+            f"data_mode={data_mode} requires CoT samples, but prepared cot samples = 0."
+        )
+
+    return train_df
 
 
 
@@ -287,13 +414,10 @@ def train_model(model, tokenizer, dtype, train, cfg):
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
 
-    train_pd_small = train.to_pandas().sample(
-        n=min(cfg["max_train_samples"], train.shape[0]),
-        random_state=cfg["random_state"],
-    ).reset_index(drop=True)
+    train_df = prepare_training_data(train, tokenizer, cfg)
 
     train_dataset = PromptCompletionDataset(
-        train_pd_small,
+        train_df,
         tokenizer,
         max_length=cfg["max_length"],
     )
