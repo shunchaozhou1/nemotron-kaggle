@@ -3,4 +3,14 @@ kaggle.json
 outputs/
 *.zip
 __pycache__/
+**pycache**/
 .ipynb_checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.pth
+**/__pycache__/
+checkpoints/
+adapter/
+submission/
+*.log
